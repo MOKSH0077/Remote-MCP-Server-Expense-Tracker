@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# SQLite database (runtime data — never push to GitHub)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables / secrets — NEVER push these
+.env
+.env.*
+*.env
+
+# OS files
+.DS_Store
+Thumbs.db
