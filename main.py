@@ -1,5 +1,5 @@
 # ============================================================
-# REMOTE MCP SERVER — EXPENSE TRACKER
+# REMOTE MCP SERVER — EXPENSE TRACKER (ASYNC VERSION)
 # ============================================================
 #
 # WHAT IS A REMOTE MCP SERVER?
@@ -84,16 +84,27 @@
 #   → On cloud platforms, the platform usually assigns the port via an env variable
 #     (e.g., PORT=8080) — so production code often does: port=int(os.environ.get("PORT", 8000))
 #
-# FINAL FLOW (Local Dev → Cloud Deploy):
+# ============================================================
+# ⚡ WHY ASYNC CODE INSTEAD OF SYNC? (SYNC vs ASYNC EXPLAINED)
+# ============================================================
 #
-#   DEV:    uv run python main.py → server at http://localhost:8000/mcp (your machine)
-#   DEPLOY: push to GitHub → FastMCP Cloud → server at https://xxx.fastmcp.app/mcp (internet)
-#   CLAUDE: connects via that URL → tools available to anyone
+# PEHLE KYA THA (Synchronous):
+# - Standard `import sqlite3` & `def add_expense(...)`
+# - Synchronous code executes linearly. Jab ek query run hoti hai, tab tak baki requests block rehti hain.
+# - Remote Server pe jab multiple users ya AI agents ek saath tool call karenge, toh Sync code se server slow ho jaata hai.
 #
+# AB KYA HAI (Asynchronous):
+# - `import aiosqlite` & `async def add_expense(...)` & `await conn.execute(...)`
+# - Async (Non-Blocking) code Python Event Loop ka use karta hai. Jab SQLite DB disk operation kar raha hota hai,
+#   tab server freeze hone ki jagah doosre user ki incoming HTTP request ko process kar sakta hai!
+#
+# KYUN ZAROORI HAI?
+# - FastMCP ka underlying server (Uvicorn/Starlette) Async-first hai.
+# - High concurrency aur production-grade Remote MCP Servers ke liye ASYNC best practice hoti hai!
 # ============================================================
 
 from fastmcp import FastMCP
-import sqlite3
+import aiosqlite
 import os
 
 # WHY DB_PATH LIKE THIS?
@@ -112,27 +123,18 @@ else:
 mcp=FastMCP(name='expense-tracker')
 
 
-# WHY THIS FUNCTION?
-# 1. This function initializes our database. When the app starts, we must ensure
-#    the "expenses" table exists so we can read/write data without errors.
-# 2. SQLite automatically creates the "Expense.db" file if it doesn't exist,
-#    but we still need to create the table inside it.
+# WHY THIS FUNCTION IS ASYNC?
+# 1. PEHLE: `def initdb()` with `sqlite3.connect()`. Blocking execution!
+# 2. AB: `async def initdb()` with `async with aiosqlite.connect()`.
+# 3. KYUN: Server startup par table asynchronously non-blocking way mein initialize hoga.
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "with sqlite3.connect(DB_PATH) as conn:": Opens a connection to the database file.
-#   The "with" block ensures the connection closes automatically when done.
-# - "conn.execute(...)": Runs the SQL command to create the table.
-# - "CREATE TABLE IF NOT EXISTS expenses": Creates the table only if it doesn't
-#   already exist, preventing errors on subsequent runs.
-# - Columns defined:
-#    * id: Unique ID for each expense (auto-increments).
-#    * amount: Decimal value for the expense amount (cannot be empty).
-#    * category: Category name (cannot be empty).
-#    * date: The date of the expense (cannot be empty).
-#    * description: Optional notes about the expense.
-def initdb():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
+# - "async with aiosqlite.connect(DB_PATH) as conn:": Asynchronously opens connection.
+# - "await conn.execute(...)": Awaits SQL query execution without blocking the main event loop.
+# - "await conn.commit()": Awaits writing changes to disk.
+async def initdb():
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("""
         CREATE TABLE IF NOT EXISTS expenses(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             amount REAL NOT NULL,
@@ -141,111 +143,109 @@ def initdb():
             description TEXT
         )
         """)
+        await conn.commit()
 
-initdb()
 
-
-# WHY THIS TOOL?
-# This tool allows the MCP client to add a new expense entry into the SQLite database.
+# WHY THIS TOOL IS ASYNC?
+# PEHLE: `def add_expense(...)` (Sync / Blocking)
+# AB: `async def add_expense(...)` (Async / Non-blocking)
+# KYUN: Multiple users simultaneously expense add kar sakte hain without waiting for DB locks!
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "@mcp.tool": Exposes this Python function as an MCP tool so that any MCP
-#   client/agent (Claude, Inspector, etc.) can call it.
-# - "try...except": Catches any database/execution errors to avoid crashing the server.
-# - "with sqlite3.connect(DB_PATH) as conn:": Opens a connection to the database file.
-# - "cursor = conn.cursor()": Creates a cursor object to execute SQL commands.
-# - "cursor.execute(...)": Safely inserts the expense data into the table.
-#   The "?" placeholders prevent SQL injection attacks.
-# - "return {"status":"ok","id":cursor.lastrowid}": Returns success + the new record's ID.
+# - "@mcp.tool": Exposes function as MCP tool. FastMCP natively supports async functions!
+# - "async with aiosqlite.connect(DB_PATH) as conn:": Non-blocking DB connection.
+# - "cursor = await conn.cursor()": Asynchronously creates cursor.
+# - "await cursor.execute(...)": Non-blocking insert operation.
+# - "await conn.commit()": Commits transaction to database.
+# - "cursor.lastrowid": Returns inserted ID.
 @mcp.tool
-def add_expense(amount:float,category:str,date:str,description:str)->dict:
+async def add_expense(amount: float, category: str, date: str, description: str) -> dict:
     """Add expense to database"""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO expenses (amount,category,date,description) VALUES (?,?,?,?)",(amount,category,date,description))
-            return {"status":"ok","id":cursor.lastrowid}
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "INSERT INTO expenses (amount,category,date,description) VALUES (?,?,?,?)",
+                (amount, category, date, description)
+            )
+            await conn.commit()
+            return {"status": "ok", "id": cursor.lastrowid}
     except Exception as e:
-        return {"status":"error","message":str(e)}
+        return {"status": "error", "message": str(e)}
 
 
-# WHY THIS TOOL?
-# This tool retrieves all recorded expenses from the database so the user/agent can view them.
+# WHY THIS TOOL IS ASYNC?
+# PEHLE: `def list_expenses()` (Sync fetch)
+# AB: `async def list_expenses()` (Async fetch)
+# KYUN: DB reading IO operation hai. Await karne par doosri HTTP requests block nahi honge.
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "@mcp.tool": Exposes this function as an MCP tool.
-# - "with sqlite3.connect(DB_PATH) as conn:": Opens a connection to the database file.
-# - "cursor = conn.cursor()": Prepares a cursor to execute SQL commands.
-# - "cursor.execute("SELECT * FROM expenses")": Fetches all rows from the expenses table.
-# - "rows=cursor.fetchall()": Gathers all query results as a list of tuples.
-# - "return rows": Returns the full list of expenses.
+# - "async with aiosqlite.connect(DB_PATH) as conn:": Non-blocking connection.
+# - "cursor = await conn.cursor()": Asynchronously prepares cursor.
+# - "await cursor.execute("SELECT * FROM expenses")": Non-blocking query execution.
+# - "rows = await cursor.fetchall()": Asynchronously retrieves all fetched rows.
 @mcp.tool
-def list_expenses()->list:
+async def list_expenses() -> list:
     """Get all expenses from database"""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM expenses")
-        rows=cursor.fetchall()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.cursor()
+        await cursor.execute("SELECT * FROM expenses")
+        rows = await cursor.fetchall()
         return rows
 
 
-# WHY THIS TOOL?
-# This tool modifies an existing expense record in the database using its unique integer ID.
+# WHY THIS TOOL IS ASYNC?
+# PEHLE: `def edit_expense(...)` (Sync update)
+# AB: `async def edit_expense(...)` (Async update)
+# KYUN: Non-blocking UPDATE operation.
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "@mcp.tool": Exposes this function as an MCP tool.
-# - "try...except": Catches potential database errors so the server doesn't crash.
-# - "with sqlite3.connect(DB_PATH) as conn:": Opens a connection to the database file.
-# - "cursor = conn.cursor()": Prepares a cursor to execute SQL commands.
-# - "cursor.execute(...)": Runs the UPDATE SQL query to change fields where the ID matches.
-# - "cursor.rowcount": Checks how many rows were updated. If 0, the ID was not found.
+# - "await cursor.execute(...)": Runs non-blocking UPDATE query.
+# - "await conn.commit()": Commits the update asynchronously.
+# - "cursor.rowcount": Checks modified rows count.
 @mcp.tool
-def edit_expense(id:int,amount:float,category:str,date:str,description:str)->dict:
+async def edit_expense(id: int, amount: float, category: str, date: str, description: str) -> dict:
     """Edit expense in database"""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE expenses SET amount = ?, category = ?, date = ?, description = ? WHERE id = ?",(amount,category,date,description,id))
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "UPDATE expenses SET amount = ?, category = ?, date = ?, description = ? WHERE id = ?",
+                (amount, category, date, description, id)
+            )
+            await conn.commit()
             if cursor.rowcount == 0:
-                return {"status":"error","message":"Expense ID not found"}
-            return {"status":"ok","id":id}
+                return {"status": "error", "message": "Expense ID not found"}
+            return {"status": "ok", "id": id}
     except Exception as e:
-        return {"status":"error","message":str(e)}
+        return {"status": "error", "message": str(e)}
 
 
-# WHY THIS TOOL?
-# This tool deletes a specific expense record from the database based on its unique integer ID.
+# WHY THIS TOOL IS ASYNC?
+# PEHLE: `def delete_expense(...)` (Sync delete)
+# AB: `async def delete_expense(...)` (Async delete)
+# KYUN: Non-blocking DELETE operation.
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "@mcp.tool": Exposes this function as an MCP tool.
-# - "try...except": Safeguards the server from crashing on database errors.
-# - "with sqlite3.connect(DB_PATH) as conn:": Opens a connection to the database file.
-# - "cursor = conn.cursor()": Prepares a cursor to execute SQL commands.
-# - "cursor.execute(...)": Runs the DELETE SQL query for the given ID.
-# - "cursor.rowcount": Checks if a row was actually deleted. If 0, the ID was not found.
+# - "await cursor.execute(...)": Runs non-blocking DELETE query.
+# - "await conn.commit()": Commits row deletion asynchronously.
 @mcp.tool
-def delete_expense(id:int)->dict:
+async def delete_expense(id: int) -> dict:
     """Delete expense from database"""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM expenses WHERE id = ?",(id,))
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute("DELETE FROM expenses WHERE id = ?", (id,))
+            await conn.commit()
             if cursor.rowcount == 0:
-                return {"status":"error","message":"Expense ID not found"}
-            return {"status":"ok"}
+                return {"status": "error", "message": "Expense ID not found"}
+            return {"status": "ok"}
     except Exception as e:
-        return {"status":"error","message":str(e)}
+        return {"status": "error", "message": str(e)}
 
-# WHY if __name__ == "__main__"?
-# This ensures mcp.run() is only called when YOU run this file directly
-# (e.g., uv run python main.py).
-# When FastMCP Cloud or another platform imports this file to get the "mcp"
-# object, it does NOT trigger this block — preventing accidental server starts.
-#
-# WHAT mcp.run() DOES:
-# Starts the HTTP server using uvicorn (a fast async Python web server).
-# Your server becomes accessible at: http://0.0.0.0:8000/mcp
-# Locally: http://localhost:8000/mcp
-# On cloud: https://your-deployment-url/mcp
-if __name__=="__main__":
-    mcp.run(transport="http",host="0.0.0.0",port=8000)
+
+# FastMCP Server startup handling async initdb before running HTTP server
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(initdb())
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
