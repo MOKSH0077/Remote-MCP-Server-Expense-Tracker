@@ -123,15 +123,12 @@ else:
 mcp=FastMCP(name='expense-tracker')
 
 
-# WHY THIS FUNCTION IS ASYNC?
-# 1. PEHLE: `def initdb()` with `sqlite3.connect()`. Blocking execution!
-# 2. AB: `async def initdb()` with `async with aiosqlite.connect()`.
-# 3. KYUN: Server startup par table asynchronously non-blocking way mein initialize hoga.
-#
-# HOW IT WORKS (LINE-BY-LINE):
-# - "async with aiosqlite.connect(DB_PATH) as conn:": Asynchronously opens connection.
-# - "await conn.execute(...)": Awaits SQL query execution without blocking the main event loop.
-# - "await conn.commit()": Awaits writing changes to disk.
+# WHY THIS FUNCTION IS ASYNC & CALLED IN EVERY TOOL?
+# 1. PEHLE: Sync code mein global scope mein `initdb()` direct call hota tha.
+# 2. ASYNC PROBLEM: Async function `async def initdb()` ko Python global scope mein run nahi kiya ja sakta
+#    kyunki wahan koi active Event Loop nahi hota! Aur Cloud deployment mein `if __name__ == "__main__":` block skip hota hai!
+# 3. SOLUTION: Har tool call se pehle `await initdb()` execute hota hai.
+#    `CREATE TABLE IF NOT EXISTS` fast aur safe hai (microseconds lagte hain), isse Cloud par "no such table: expenses" error 100% fix ho gayi!
 async def initdb():
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("""
@@ -152,7 +149,8 @@ async def initdb():
 # KYUN: Multiple users simultaneously expense add kar sakte hain without waiting for DB locks!
 #
 # HOW IT WORKS (LINE-BY-LINE):
-# - "@mcp.tool": Exposes function as MCP tool. FastMCP natively supports async functions!
+# - "@mcp.tool": Exposes function as MCP tool.
+# - "await initdb()": Ensures table exists before inserting data.
 # - "async with aiosqlite.connect(DB_PATH) as conn:": Non-blocking DB connection.
 # - "cursor = await conn.cursor()": Asynchronously creates cursor.
 # - "await cursor.execute(...)": Non-blocking insert operation.
@@ -162,6 +160,7 @@ async def initdb():
 async def add_expense(amount: float, category: str, date: str, description: str) -> dict:
     """Add expense to database"""
     try:
+        await initdb()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.cursor()
             await cursor.execute(
@@ -180,6 +179,7 @@ async def add_expense(amount: float, category: str, date: str, description: str)
 # KYUN: DB reading IO operation hai. Await karne par doosri HTTP requests block nahi honge.
 #
 # HOW IT WORKS (LINE-BY-LINE):
+# - "await initdb()": Ensures table exists before querying.
 # - "async with aiosqlite.connect(DB_PATH) as conn:": Non-blocking connection.
 # - "cursor = await conn.cursor()": Asynchronously prepares cursor.
 # - "await cursor.execute("SELECT * FROM expenses")": Non-blocking query execution.
@@ -187,6 +187,7 @@ async def add_expense(amount: float, category: str, date: str, description: str)
 @mcp.tool
 async def list_expenses() -> list:
     """Get all expenses from database"""
+    await initdb()
     async with aiosqlite.connect(DB_PATH) as conn:
         cursor = await conn.cursor()
         await cursor.execute("SELECT * FROM expenses")
@@ -200,6 +201,7 @@ async def list_expenses() -> list:
 # KYUN: Non-blocking UPDATE operation.
 #
 # HOW IT WORKS (LINE-BY-LINE):
+# - "await initdb()": Ensures table exists before updating.
 # - "await cursor.execute(...)": Runs non-blocking UPDATE query.
 # - "await conn.commit()": Commits the update asynchronously.
 # - "cursor.rowcount": Checks modified rows count.
@@ -207,6 +209,7 @@ async def list_expenses() -> list:
 async def edit_expense(id: int, amount: float, category: str, date: str, description: str) -> dict:
     """Edit expense in database"""
     try:
+        await initdb()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.cursor()
             await cursor.execute(
@@ -227,12 +230,14 @@ async def edit_expense(id: int, amount: float, category: str, date: str, descrip
 # KYUN: Non-blocking DELETE operation.
 #
 # HOW IT WORKS (LINE-BY-LINE):
+# - "await initdb()": Ensures table exists before deleting.
 # - "await cursor.execute(...)": Runs non-blocking DELETE query.
 # - "await conn.commit()": Commits row deletion asynchronously.
 @mcp.tool
 async def delete_expense(id: int) -> dict:
     """Delete expense from database"""
     try:
+        await initdb()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.cursor()
             await cursor.execute("DELETE FROM expenses WHERE id = ?", (id,))
@@ -244,7 +249,7 @@ async def delete_expense(id: int) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-# FastMCP Server startup handling async initdb before running HTTP server
+# FastMCP Server startup for local testing
 if __name__ == "__main__":
     import asyncio
     asyncio.run(initdb())
