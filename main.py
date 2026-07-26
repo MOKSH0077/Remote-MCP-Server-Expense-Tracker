@@ -97,11 +97,14 @@ import sqlite3
 import os
 
 # WHY DB_PATH LIKE THIS?
-# os.path.dirname(__file__) gives the folder where this script lives.
-# We store Expense.db in the same folder so it's always found relative to the script.
-# NOTE: On cloud platforms, this file will reset on every redeploy (ephemeral storage).
-# For production, use a persistent DB like PostgreSQL or Supabase instead.
-DB_PATH=os.path.join(os.path.dirname(__file__),"Expense.db")
+# On Cloud platforms (Linux), the directory containing the code is read-only!
+# Writing to code directory causes "sqlite3.OperationalError: attempt to write a readonly database".
+# Therefore, on Linux/Cloud (os.name == 'posix'), we store the database in the writable '/tmp' directory.
+# On Windows (Local), it stores it next to the script as usual.
+if os.name == 'posix':
+    DB_PATH = "/tmp/Expense.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "Expense.db")
 
 # WHY FastMCP(name='expense-tracker')?
 # Creates the MCP server instance with a display name.
