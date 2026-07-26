@@ -25,13 +25,13 @@ C:\Users\<YourName>\AppData\Roaming\Claude\claude_desktop_config.json
 {
   "mcpServers": {
     "expense-tracker": {
-      "url": "https://YOUR_DEPLOYED_URL/mcp"
+      "url": "https://moksh-expense-tracker.fastmcp.app/mcp"
     }
   }
 }
 ```
 
-> 🔗 **Server URL**: *(Will be updated after deployment to FastMCP Cloud)*
+> 🔗 **Server URL**: `https://moksh-expense-tracker.fastmcp.app/mcp`
 
 ### Step 3 — Restart Claude
 
