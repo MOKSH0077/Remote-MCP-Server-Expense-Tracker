@@ -102,8 +102,45 @@
 # - FastMCP ka underlying server (Uvicorn/Starlette) Async-first hai.
 # - High concurrency aur production-grade Remote MCP Servers ke liye ASYNC best practice hoti hai!
 # ============================================================
+# 🔐 WHY GOOGLE OAUTH? (UNIVERSAL CONNECTION FOR ALL USERS)
+# ============================================================
+#
+# PROBLEM PEHLE:
+# - Claude Desktop pe JSON config file + npx/uvx wrapper manually dalna padta tha.
+# - Claude Web / Mobile App pe sirf URL dalte hi "Couldn't register with sign-in service" error aati thi.
+# - Reason: Claude Web/Mobile pe MCP spec require karta hai ki server OAuth 2.1 + PKCE support kare.
+#   Bina OAuth ke Claude Web/Mobile ka Connector UI kabhi bhi connect nahi hone deta!
+#
+# SOLUTION AB (Google OAuth via FastMCP's GoogleProvider):
+# - FastMCP 3.x mein built-in `GoogleProvider` class aati hai jo OAuth 2.1 + PKCE ka poora flow handle karti hai.
+# - Jab koi bhi user (phone/laptop/web) Claude mein URL daalta hai:
+#   1. FastMCP "Sign in with Google" pop-up trigger karta hai.
+#   2. User apna Gmail account se login karta hai (99% logo ke paas Google account hota hai!).
+#   3. Google ek secure token issue karta hai.
+#   4. Claude us token ko save kar leta hai → Server PERMANENTLY connected!
+#
+# KYUN GOOGLE? (NOT GITHUB / CUSTOM LOGIN)
+# - GitHub account sirf developers ke paas hoti hai.
+# - Custom username/password banane ke liye poora auth server banana padta hai (complex!).
+# - GOOGLE = 99% users ke paas Gmail hai → Most Universal Free Solution!
+#
+# KAISE KAAM KARTA HAI? (OAuthProxy Pattern)
+# - Google natively MCP ka Dynamic Client Registration (DCR) support nahi karta.
+# - FastMCP ka `GoogleProvider` ek OAuthProxy ki tarah kaam karta hai:
+#   * MCP Client (Claude) ko lagta hai woh FastMCP se seedha baat kar raha hai.
+#   * FastMCP peeche se Google ke saath OAuth exchange karta hai.
+# - Automatically yeh endpoints expose hote hain:
+#   * /auth/callback  → Google login ke baad redirect URL
+#   * /.well-known/oauth-authorization-server → Claude ko auth config discovery ke liye
+#
+# REQUIRED ENV VARIABLES (Render.com Dashboard mein set karo):
+# - GOOGLE_CLIENT_ID     → Google Cloud Console se milta hai (OAuth 2.0 Web Application)
+# - GOOGLE_CLIENT_SECRET → Google Cloud Console se milta hai
+# - SERVER_BASE_URL      → Render URL: https://remote-mcp-server-expense-tracker-k4gb.onrender.com
+# ============================================================
 
 from fastmcp import FastMCP
+from fastmcp.server.auth.providers.google import GoogleProvider
 import aiosqlite
 import os
 
@@ -117,10 +154,31 @@ if os.name == 'posix':
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "Expense.db")
 
-# WHY FastMCP(name='expense-tracker')?
-# Creates the MCP server instance with a display name.
-# This name appears in MCP Inspector and MCP client listings.
-mcp=FastMCP(name='expense-tracker')
+# WHY FastMCP(name='expense-tracker', auth=google_auth)?
+# - name='expense-tracker': Display name shown in MCP Inspector and Claude's Connector UI.
+# - auth=google_auth: Attaches Google OAuth provider to this server.
+#   FastMCP automatically handles all /.well-known/, /auth/callback, token endpoints.
+#   Without auth=, Claude Web/Mobile would show "Couldn't register with sign-in service" error.
+#
+# GOOGLE AUTH PROVIDER SETUP:
+# - client_id & client_secret: Loaded from Render environment variables (never hardcoded for security!).
+# - base_url: Your Render server's public URL. FastMCP uses this to build redirect_uri.
+# - redirect_path: Google will redirect to this path after user logs in.
+# - required_scopes: What info we request from Google:
+#   * openid: Standard login scope (confirms identity)
+#   * userinfo.email: Gets user's email (used to identify who is connecting)
+#
+# NOTE: Locally (without env vars set), GoogleProvider will raise error.
+# For local testing use: uv run fastmcp dev main.py (Inspector uses stdio, skips OAuth)
+google_auth = GoogleProvider(
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    base_url=os.environ.get("SERVER_BASE_URL", "http://localhost:8000"),
+    redirect_path="/auth/callback",
+    required_scopes=["openid", "https://www.googleapis.com/auth/userinfo.email"]
+)
+
+mcp = FastMCP(name='expense-tracker', auth=google_auth)
 
 
 # WHY THIS FUNCTION IS ASYNC & CALLED IN EVERY TOOL?
