@@ -249,8 +249,13 @@ async def delete_expense(id: int) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-# FastMCP Server startup for local testing
+# FastMCP Server startup
+# NOTE ON PORT SELECTION:
+# Locally, it defaults to port 8000.
+# On Cloud hosting platforms like Render.com, Railway, etc., the platform dynamically sets the 'PORT' environment variable.
+# Reading int(os.environ.get("PORT", 8000)) ensures our server dynamically binds to whatever port Render/Cloud assigns!
 if __name__ == "__main__":
     import asyncio
     asyncio.run(initdb())
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="http", host="0.0.0.0", port=port)

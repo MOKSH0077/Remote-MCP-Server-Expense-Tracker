@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: remote-mcp-expense-tracker
+    runtime: python
+    buildCommand: "pip install uv && uv sync"
+    startCommand: "uv run python main.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
